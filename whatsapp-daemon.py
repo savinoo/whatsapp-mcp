@@ -719,12 +719,30 @@ Custo hoje: ${cost_today:.4f}
     send_whatsapp_message(status_msg)
 
 
+def handle_help_command():
+    """/help - List all available commands."""
+    help_msg = """*Comandos disponiveis:*
+
+/help — Mostra esta lista
+/cancel — Cancela a tarefa em execucao
+/new — Inicia nova sessao (limpa contexto)
+/history — Ultimas 10 interacoes
+/send <path> — Envia arquivo pelo WhatsApp
+/status — Info do sistema (uptime, disco, custo)
+
+Qualquer outra mensagem e processada pelo Claude com acesso total ao Mac."""
+
+    send_whatsapp_message(help_msg)
+
+
 def handle_slash_command(content: str):
     """Process slash commands immediately (bypass batching)."""
     parts = content.split(maxsplit=1)
     command = parts[0].lower()
 
-    if command == "/cancel":
+    if command == "/help":
+        handle_help_command()
+    elif command == "/cancel":
         handle_cancel_command()
     elif command == "/new":
         handle_new_command()
@@ -736,7 +754,7 @@ def handle_slash_command(content: str):
     elif command == "/status":
         handle_status_command()
     else:
-        send_whatsapp_message(f"Comando desconhecido: {command}\n\nDisponiveis: /cancel, /new, /history, /send, /status")
+        send_whatsapp_message(f"Comando desconhecido: {command}\n\nDigite /help para ver os comandos disponiveis.")
 
 
 # ─── Message Batching ────────────────────────────────────────────────────────
