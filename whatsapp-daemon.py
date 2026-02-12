@@ -96,6 +96,10 @@ current_session_id: str | None = None
 session_message_count: int = 0
 session_lock = threading.Lock()
 
+# Message deduplication
+seen_message_ids: set[str] = set()
+DEDUP_MAX_SIZE = 100
+
 # Daemon stats (Phase 6)
 DAEMON_START_TIME = time.time()
 
@@ -847,6 +851,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
         message_id = data.get("message_id", "")
 
         log.info(f"Webhook received: sender={sender}, content={content[:80]}")
+
+        # Deduplicate messages
+        if message_id and message_id in seen_message_ids:
+            log.info(f"Duplicate message ignored: {message_id}")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+            return
+
+        if message_id:
+            seen_message_ids.add(message_id)
+            # Prevent unbounded growth
+            if len(seen_message_ids) > DEDUP_MAX_SIZE:
+                seen_message_ids.clear()
 
         if content:
             # Check if it's a slash command (Phase 1)
