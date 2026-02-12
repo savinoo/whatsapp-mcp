@@ -26,7 +26,7 @@ BRIDGE_API = os.environ.get("BRIDGE_API", "http://localhost:8080")
 LUCAS_JID = os.environ.get("WHATSAPP_JID", "5528999301848@s.whatsapp.net")
 BATCH_WINDOW_SECONDS = int(os.environ.get("BATCH_WINDOW", "5"))
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY", "20"))
-CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
+CLAUDE_TIMEOUT = os.environ.get("CLAUDE_TIMEOUT", "")  # empty = no timeout
 
 SYSTEM_PROMPT = """You are Lucas's agentic AI assistant with FULL ACCESS to his Mac computer. You are being invoked via WhatsApp.
 
@@ -137,7 +137,7 @@ def invoke_claude(messages: list[dict]):
             cmd,
             capture_output=True,
             text=True,
-            timeout=CLAUDE_TIMEOUT,
+            timeout=int(CLAUDE_TIMEOUT) if CLAUDE_TIMEOUT else None,
             cwd="/Users/savino",
         )
         log.info(f"Claude exit code: {result.returncode}")
@@ -165,7 +165,7 @@ def invoke_claude(messages: list[dict]):
 
     except subprocess.TimeoutExpired:
         log.error(f"Claude timed out after {CLAUDE_TIMEOUT}s")
-        send_whatsapp_message("Timeout processando mensagem. Tenta algo mais simples!")
+        send_whatsapp_message("Timeout processando. Tenta algo mais simples!")
     except FileNotFoundError:
         log.error("Claude CLI not found in PATH")
         send_whatsapp_message("Claude CLI nao disponivel.")
