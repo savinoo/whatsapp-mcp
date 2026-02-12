@@ -687,6 +687,25 @@ def handle_send_command(file_path: str):
     send_whatsapp_file(abs_path, f"Arquivo: {os.path.basename(abs_path)}")
 
 
+def handle_last_command():
+    """/last - Resend the last assistant response."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT assistant_response FROM interactions
+        ORDER BY id DESC LIMIT 1
+    """)
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row and row[0]:
+        send_whatsapp_message(row[0])
+    else:
+        send_whatsapp_message("Nenhuma resposta anterior encontrada.")
+
+
 def handle_status_command():
     """/status - Show system info (uptime, disk, session, interactions)."""
     # Uptime
@@ -727,6 +746,7 @@ def handle_help_command():
 /cancel — Cancela a tarefa em execucao
 /new — Inicia nova sessao (limpa contexto)
 /history — Ultimas 10 interacoes
+/last — Reenvia a ultima resposta
 /send <path> — Envia arquivo pelo WhatsApp
 /status — Info do sistema (uptime, disco, custo)
 
@@ -748,6 +768,8 @@ def handle_slash_command(content: str):
         handle_new_command()
     elif command == "/history":
         handle_history_command()
+    elif command == "/last":
+        handle_last_command()
     elif command == "/send":
         file_path = parts[1] if len(parts) > 1 else ""
         handle_send_command(file_path)
