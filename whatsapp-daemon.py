@@ -126,9 +126,16 @@ def init_database():
             assistant_response TEXT,
             duration_seconds REAL,
             tool_use_count INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0,
             FOREIGN KEY (session_id) REFERENCES sessions(session_id)
         )
     """)
+
+    # Migration: add cost_usd column if missing (existing databases)
+    try:
+        cursor.execute("ALTER TABLE interactions ADD COLUMN cost_usd REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
 
     conn.commit()
     conn.close()
@@ -186,7 +193,7 @@ def restore_last_session():
 
 
 def save_interaction(session_id: str, user_msg: str, assistant_resp: str,
-                     duration: float, tool_count: int):
+                     duration: float, tool_count: int, cost_usd: float = 0.0):
     """Save an interaction to the database."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -195,9 +202,9 @@ def save_interaction(session_id: str, user_msg: str, assistant_resp: str,
 
     cursor.execute("""
         INSERT INTO interactions
-        (session_id, timestamp, user_message, assistant_response, duration_seconds, tool_use_count)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (session_id, timestamp, user_msg, assistant_resp, duration, tool_count))
+        (session_id, timestamp, user_message, assistant_response, duration_seconds, tool_use_count, cost_usd)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (session_id, timestamp, user_msg, assistant_resp, duration, tool_count, cost_usd))
 
     # Update session
     cursor.execute("""
@@ -277,6 +284,22 @@ def get_interactions_today() -> int:
     return count
 
 
+def get_cost_today() -> float:
+    """Get total API cost from today's interactions."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    today = time.strftime("%Y-%m-%d")
+    cursor.execute("""
+        SELECT COALESCE(SUM(cost_usd), 0) FROM interactions
+        WHERE timestamp LIKE ?
+    """, (f"{today}%",))
+
+    cost = cursor.fetchone()[0]
+    conn.close()
+    return cost
+
+
 # ─── WhatsApp Communication ──────────────────────────────────────────────────
 
 
@@ -349,11 +372,12 @@ def read_stream_json(proc: subprocess.Popen, stop_heartbeat: threading.Event,
     - {"type": "tool_result", ...} — tool execution result
 
     Updates tool_count_ref["count"] in real-time for heartbeat thread.
-    Returns: (result_text, tool_use_count, modified_files)
+    Returns: (result_text, tool_use_count, modified_files, cost_usd)
     """
     result_text = ""
     tool_use_count = 0
     modified_files = []
+    cost_usd = 0.0
 
     for line in iter(proc.stdout.readline, ""):
         if not line.strip():
@@ -386,15 +410,16 @@ def read_stream_json(proc: subprocess.Popen, stop_heartbeat: threading.Event,
                             modified_files.append(file_path)
                             log.info(f"Detected modified file: {file_path}")
 
-        # Extract final result
+        # Extract final result and cost
         elif event_type == "result":
             result_text = event.get("result", "")
+            cost_usd = event.get("total_cost_usd", 0.0) or 0.0
 
     # Stop heartbeat and typing threads
     stop_heartbeat.set()
     stop_typing.set()
 
-    return result_text, tool_use_count, modified_files
+    return result_text, tool_use_count, modified_files, cost_usd
 
 
 def heartbeat_thread(stop_event: threading.Event, tool_count_ref: dict):
@@ -503,7 +528,7 @@ def invoke_claude(messages: list[dict]):
         typing_t.start()
 
         # Read streaming output (Phase 3)
-        result_text, tool_use_count, modified_files = read_stream_json(
+        result_text, tool_use_count, modified_files, cost_usd = read_stream_json(
             proc, stop_heartbeat, stop_typing, tool_count_ref
         )
 
@@ -512,7 +537,7 @@ def invoke_claude(messages: list[dict]):
 
         duration = time.time() - start_time
 
-        log.info(f"Claude finished (exit {proc.returncode}, {duration:.1f}s, {tool_use_count} tools)")
+        log.info(f"Claude finished (exit {proc.returncode}, {duration:.1f}s, {tool_use_count} tools, ${cost_usd:.4f})")
 
         # Clear active process
         with active_process_lock:
@@ -523,7 +548,7 @@ def invoke_claude(messages: list[dict]):
             log.info(f"Claude response ({len(result_text)} chars): {result_text[:150]}...")
 
             # Save interaction to DB (Phase 4)
-            save_interaction(session_id, user_msg, result_text, duration, tool_use_count)
+            save_interaction(session_id, user_msg, result_text, duration, tool_use_count, cost_usd)
 
             # Send response (split if too long)
             if len(result_text) > 4000:
@@ -678,8 +703,9 @@ def handle_status_command():
     with session_lock:
         session_id_short = current_session_id[:8] + "..." if current_session_id else "Nenhuma"
 
-    # Interactions today
+    # Interactions today + cost
     interactions_today = get_interactions_today()
+    cost_today = get_cost_today()
 
     status_msg = f"""*Status do Daemon*
 
@@ -687,6 +713,7 @@ Uptime: {uptime_str}
 Disco livre: {free_gb:.1f} GB
 Sessao atual: {session_id_short}
 Interacoes hoje: {interactions_today}
+Custo hoje: ${cost_today:.4f}
 """
 
     send_whatsapp_message(status_msg)
