@@ -880,6 +880,9 @@ def main():
     # Health check (Phase 6)
     check_bridge_health()
 
+    # Notify Lucas that daemon is online
+    send_whatsapp_message("Daemon online. /help para comandos.")
+
     server = HTTPServer(("", WEBHOOK_PORT), WebhookHandler)
     log.info(f"Webhook server listening on http://0.0.0.0:{WEBHOOK_PORT}/webhook")
 
