@@ -100,6 +100,9 @@ session_lock = threading.Lock()
 seen_message_ids: set[str] = set()
 DEDUP_MAX_SIZE = 100
 
+# Model selection
+current_model: str | None = None  # None = use Claude CLI default
+
 # Daemon stats (Phase 6)
 DAEMON_START_TIME = time.time()
 
@@ -485,6 +488,9 @@ def invoke_claude(messages: list[dict]):
         "--output-format", "stream-json",  # Phase 3
     ]
 
+    if current_model:
+        cmd.extend(["--model", current_model])
+
     if is_first_message:
         cmd.extend(["--session-id", session_id])
     else:
@@ -742,6 +748,38 @@ Custo hoje: ${cost_today:.4f}
     send_whatsapp_message(status_msg)
 
 
+def handle_model_command(model_arg: str):
+    """/model - Switch Claude model."""
+    global current_model
+
+    VALID_MODELS = {
+        "opus": "claude-opus-4-6",
+        "sonnet": "claude-sonnet-4-5-20250929",
+        "haiku": "claude-haiku-4-5-20251001",
+    }
+
+    if not model_arg:
+        current_display = current_model or "default (CLI config)"
+        models_list = ", ".join(VALID_MODELS.keys())
+        send_whatsapp_message(f"Modelo atual: {current_display}\n\nUso: /model <{models_list}>")
+        return
+
+    alias = model_arg.lower().strip()
+
+    if alias == "default":
+        current_model = None
+        send_whatsapp_message("Modelo resetado para o default da CLI.")
+        return
+
+    if alias in VALID_MODELS:
+        current_model = VALID_MODELS[alias]
+        send_whatsapp_message(f"Modelo alterado para: {alias} ({current_model})")
+    else:
+        # Accept full model ID directly
+        current_model = alias
+        send_whatsapp_message(f"Modelo alterado para: {current_model}")
+
+
 def handle_help_command():
     """/help - List all available commands."""
     help_msg = """*Comandos disponiveis:*
@@ -752,6 +790,7 @@ def handle_help_command():
 /history — Ultimas 10 interacoes
 /last — Reenvia a ultima resposta
 /send <path> — Envia arquivo pelo WhatsApp
+/model <nome> — Troca modelo (opus, sonnet, haiku, default)
 /status — Info do sistema (uptime, disco, custo)
 
 Qualquer outra mensagem e processada pelo Claude com acesso total ao Mac."""
@@ -777,6 +816,9 @@ def handle_slash_command(content: str):
     elif command == "/send":
         file_path = parts[1] if len(parts) > 1 else ""
         handle_send_command(file_path)
+    elif command == "/model":
+        model_arg = parts[1] if len(parts) > 1 else ""
+        handle_model_command(model_arg)
     elif command == "/status":
         handle_status_command()
     else:
