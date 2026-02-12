@@ -8,116 +8,78 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BRIDGE_DIR="$SCRIPT_DIR/whatsapp-bridge"
 DAEMON_SCRIPT="$SCRIPT_DIR/whatsapp-daemon.py"
 
-# PIDs for cleanup
 BRIDGE_PID=""
 DAEMON_PID=""
 
 cleanup() {
     echo ""
-    echo "[start-daemon] Shutting down..."
-
-    if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
-        echo "[start-daemon] Stopping daemon (PID $DAEMON_PID)..."
-        kill "$DAEMON_PID" 2>/dev/null || true
-        wait "$DAEMON_PID" 2>/dev/null || true
-    fi
-
-    if [ -n "$BRIDGE_PID" ] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
-        echo "[start-daemon] Stopping bridge (PID $BRIDGE_PID)..."
-        kill "$BRIDGE_PID" 2>/dev/null || true
-        wait "$BRIDGE_PID" 2>/dev/null || true
-    fi
-
-    echo "[start-daemon] All processes stopped."
+    echo "[daemon] Shutting down..."
+    [ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null
+    [ -n "$BRIDGE_PID" ] && kill "$BRIDGE_PID" 2>/dev/null
+    wait 2>/dev/null
+    echo "[daemon] Stopped."
     exit 0
 }
 
 trap cleanup SIGINT SIGTERM
 
-# Check prerequisites
+# Prerequisites
 if [ ! -f "$BRIDGE_DIR/whatsapp-bridge" ]; then
-    echo "[start-daemon] Building Go bridge..."
-    (cd "$BRIDGE_DIR" && go build -o whatsapp-bridge .)
+    echo "[daemon] Building Go bridge..."
+    (cd "$BRIDGE_DIR" && go build -o whatsapp-bridge .) || exit 1
 fi
+command -v python3 &>/dev/null || { echo "[daemon] ERROR: python3 not found"; exit 1; }
+command -v claude &>/dev/null  || { echo "[daemon] ERROR: claude CLI not found"; exit 1; }
+python3 -c "import requests" 2>/dev/null || pip3 install requests
 
-if ! command -v python3 &>/dev/null; then
-    echo "[start-daemon] ERROR: python3 not found"
-    exit 1
-fi
-
-if ! command -v claude &>/dev/null; then
-    echo "[start-daemon] ERROR: claude CLI not found"
-    exit 1
-fi
-
-# Check if requests module is available
-python3 -c "import requests" 2>/dev/null || {
-    echo "[start-daemon] Installing requests module..."
-    pip3 install requests
-}
-
-# Kill any existing processes on our ports
-echo "[start-daemon] Cleaning up existing processes..."
+# Kill stale processes on our ports
+echo "[daemon] Cleaning up stale processes..."
 lsof -ti:8080 2>/dev/null | xargs kill 2>/dev/null || true
 lsof -ti:9090 2>/dev/null | xargs kill 2>/dev/null || true
 sleep 1
 
-# Start Go bridge
-echo "[start-daemon] Starting WhatsApp bridge..."
+# Start bridge
+echo "[daemon] Starting WhatsApp bridge..."
 (cd "$BRIDGE_DIR" && exec ./whatsapp-bridge) &
 BRIDGE_PID=$!
-echo "[start-daemon] Bridge PID: $BRIDGE_PID"
 
-# Wait for bridge REST API to be ready (check that OUR bridge is responding)
-echo "[start-daemon] Waiting for bridge API (port 8080)..."
+# Wait for bridge API (check port is open, don't send real messages)
+echo "[daemon] Waiting for bridge API..."
 for i in $(seq 1 30); do
-    # Check the bridge process is still alive
-    if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
-        echo "[start-daemon] ERROR: Bridge process died"
-        exit 1
-    fi
-    if curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/send -X POST -H 'Content-Type: application/json' -d '{"recipient":"test","message":"ping"}' 2>/dev/null | grep -q '500\|200\|400'; then
-        echo "[start-daemon] Bridge API is ready."
-        break
-    fi
+    kill -0 "$BRIDGE_PID" 2>/dev/null || { echo "[daemon] ERROR: Bridge died"; exit 1; }
+    lsof -ti:8080 >/dev/null 2>&1 && break
     sleep 1
-    if [ "$i" -eq 30 ]; then
-        echo "[start-daemon] WARNING: Bridge API not responding after 30s, starting daemon anyway..."
-    fi
 done
+echo "[daemon] Bridge API ready (port 8080)"
 
-# Start Python daemon
-echo "[start-daemon] Starting Claude daemon..."
+# Start daemon
+echo "[daemon] Starting Claude daemon..."
 python3 "$DAEMON_SCRIPT" &
 DAEMON_PID=$!
-echo "[start-daemon] Daemon PID: $DAEMON_PID"
-
-# Verify daemon started
 sleep 1
-if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-    echo "[start-daemon] ERROR: Daemon failed to start"
-    cleanup
-    exit 1
-fi
+kill -0 "$DAEMON_PID" 2>/dev/null || { echo "[daemon] ERROR: Daemon failed to start"; cleanup; }
+echo "[daemon] Claude daemon ready (port 9090)"
 
 echo ""
 echo "========================================="
 echo "  WhatsApp + Claude Daemon Running"
-echo "  Bridge PID: $BRIDGE_PID"
-echo "  Daemon PID: $DAEMON_PID"
-echo "  Press Ctrl+C to stop all"
+echo "  Bridge:  PID $BRIDGE_PID (port 8080)"
+echo "  Daemon:  PID $DAEMON_PID (port 9090)"
+echo "  Press Ctrl+C to stop"
 echo "========================================="
 echo ""
 
-# Monitor both processes - if either dies, shut down
+# Monitor — restart daemon if it dies, exit if bridge dies
 while true; do
     if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
-        echo "[start-daemon] Bridge process exited"
+        echo "[daemon] Bridge exited unexpectedly"
         cleanup
     fi
     if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-        echo "[start-daemon] Daemon process exited"
-        cleanup
+        echo "[daemon] Daemon died, restarting..."
+        python3 "$DAEMON_SCRIPT" &
+        DAEMON_PID=$!
+        sleep 1
     fi
     sleep 2
 done

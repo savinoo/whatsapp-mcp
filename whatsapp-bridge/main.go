@@ -1,14 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,9 +22,6 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/mdp/qrterminal"
-
-	"bytes"
-
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -31,6 +29,11 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
+)
+
+const (
+	// WEBHOOK_PHONE_NUMBER is the phone number (in WhatsApp JID format) to monitor for webhook notifications
+	WEBHOOK_PHONE_NUMBER = "5528999301848"
 )
 
 // Track message IDs sent via REST API to avoid webhook echo loops
@@ -487,15 +490,13 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 			fmt.Printf("[%s] %s %s: %s\n", timestamp, direction, sender, content)
 		}
 
-		// Notify webhook daemon for messages from Lucas
-		// IsFromMe is true because the bridge IS Lucas's account,
-		// so we detect messages sent to the self-chat ("Notes")
-		// Skip messages sent by the bridge API (echo prevention)
+		// Notify webhook daemon for messages from Lucas's self-chat
 		sentByAPI.Lock()
 		_, isEcho := sentByAPI.ids[msg.Info.ID]
 		sentByAPI.Unlock()
 
-		if chatJID == "5528999301848@s.whatsapp.net" && msg.Info.IsFromMe && content != "" && !isEcho {
+		webhookJID := WEBHOOK_PHONE_NUMBER + "@s.whatsapp.net"
+		if chatJID == webhookJID && msg.Info.IsFromMe && content != "" && !isEcho {
 			go notifyWebhook(sender, content, msg.Info.ID, chatJID)
 		}
 	}

@@ -9,6 +9,7 @@ captures the text output, and sends it back via the bridge REST API.
 
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -18,11 +19,12 @@ import requests
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-WEBHOOK_PORT = 9090
-BRIDGE_API = "http://localhost:8080"
-LUCAS_JID = "5528999301848@s.whatsapp.net"
-BATCH_WINDOW_SECONDS = 5
-MAX_HISTORY = 20  # number of recent exchanges to include for context
+WEBHOOK_PORT = int(os.environ.get("DAEMON_PORT", "9090"))
+BRIDGE_API = os.environ.get("BRIDGE_API", "http://localhost:8080")
+LUCAS_JID = os.environ.get("WHATSAPP_JID", "5528999301848@s.whatsapp.net")
+BATCH_WINDOW_SECONDS = int(os.environ.get("BATCH_WINDOW", "5"))
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY", "20"))
+CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "120"))
 
 SYSTEM_PROMPT = """You are Lucas's personal AI assistant, responding via WhatsApp.
 
@@ -113,7 +115,7 @@ def invoke_claude(messages: list[dict]):
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=CLAUDE_TIMEOUT,
             cwd="/Users/savino",
         )
         log.info(f"Claude exit code: {result.returncode}")
@@ -125,8 +127,8 @@ def invoke_claude(messages: list[dict]):
 
         if result.returncode == 0 and response:
             log.info(f"Claude response ({len(response)} chars): {response[:150]}...")
-            # Save to conversation history
             conversation_history.append({"role": "assistant", "content": response})
+
             # Split long messages for WhatsApp readability (max ~4000 chars per message)
             if len(response) > 4000:
                 chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
@@ -135,19 +137,19 @@ def invoke_claude(messages: list[dict]):
                     time.sleep(0.5)
             else:
                 send_whatsapp_message(response)
-        elif result.returncode != 0:
+        else:
             log.error(f"Claude failed (exit {result.returncode}): {result.stderr[:200]}")
             send_whatsapp_message("Erro ao processar mensagem. Tenta de novo!")
 
     except subprocess.TimeoutExpired:
-        log.error("Claude timed out after 120s")
+        log.error(f"Claude timed out after {CLAUDE_TIMEOUT}s")
         send_whatsapp_message("Timeout processando mensagem. Tenta algo mais simples!")
     except FileNotFoundError:
         log.error("Claude CLI not found in PATH")
         send_whatsapp_message("Claude CLI nao disponivel.")
     except Exception as e:
-        log.error(f"Error invoking Claude: {e}")
-        send_whatsapp_message(f"Erro: {e}")
+        log.error(f"Error invoking Claude: {e}", exc_info=True)
+        send_whatsapp_message("Erro ao processar mensagem. Tenta de novo!")
     finally:
         # Process queued messages that arrived while Claude was busy
         with buffer_lock:

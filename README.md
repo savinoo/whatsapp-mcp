@@ -106,6 +106,60 @@ Without this setup, you'll likely run into errors like:
 
 > `Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work.`
 
+## Claude Code Daemon (WhatsApp → AI Auto-reply)
+
+This fork adds an **event-driven AI daemon** that lets you chat with Claude directly from WhatsApp. Send a message to your "Notes" (self-chat), and Claude responds instantly.
+
+### How it works
+
+```
+WhatsApp (you send a message)
+    ↓
+Go Bridge (detects message, sends webhook)
+    ↓ HTTP POST to localhost:9090
+Python Daemon (batches messages for 5s)
+    ↓ invokes claude -p
+Claude CLI (generates response)
+    ↓ stdout captured by Python
+Python Daemon (sends response via REST API)
+    ↓ POST to localhost:8080/api/send
+WhatsApp (you receive the reply)
+```
+
+### Features
+
+- **Event-driven**: No polling. The Go bridge notifies the daemon instantly via webhook
+- **Message batching**: Rapid messages are grouped (5s window) into a single Claude invocation
+- **Echo prevention**: Messages sent by Claude are tracked to prevent infinite loops
+- **Conversation memory**: In-memory history maintains context across messages
+- **Queue system**: Messages arriving while Claude is processing are queued for the next round
+- **Auto-restart**: The start script monitors and restarts the daemon if it crashes
+- **Configurable**: All settings via environment variables (`DAEMON_PORT`, `BRIDGE_API`, `WHATSAPP_JID`, `BATCH_WINDOW`, `CLAUDE_TIMEOUT`, `MAX_HISTORY`)
+
+### Quick Start
+
+```bash
+# Prerequisites: Go, Python 3, Claude CLI (claude)
+pip install requests
+
+# Start both bridge + daemon
+./start-daemon.sh
+
+# Or start separately:
+cd whatsapp-bridge && ./whatsapp-bridge &
+python3 whatsapp-daemon.py &
+```
+
+Send a message in your WhatsApp "Notes" (self-chat) and Claude will reply.
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `whatsapp-bridge/main.go` | Go bridge with webhook notification on incoming messages |
+| `whatsapp-daemon.py` | Python webhook server + Claude CLI orchestrator |
+| `start-daemon.sh` | Script to run both services together |
+
 ## Architecture Overview
 
 This application consists of two main components:
