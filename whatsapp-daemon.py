@@ -136,21 +136,29 @@ def init_database():
 
 
 def cleanup_old_sessions():
-    """Delete sessions older than 7 days."""
+    """Delete sessions and their interactions older than 7 days."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     seven_days_ago = time.time() - (7 * 24 * 3600)
     timestamp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(seven_days_ago))
 
+    # Delete orphaned interactions first
+    cursor.execute("""
+        DELETE FROM interactions WHERE session_id IN (
+            SELECT session_id FROM sessions WHERE last_used_at < ?
+        )
+    """, (timestamp_str,))
+    deleted_interactions = cursor.rowcount
+
     cursor.execute("DELETE FROM sessions WHERE last_used_at < ?", (timestamp_str,))
-    deleted = cursor.rowcount
+    deleted_sessions = cursor.rowcount
 
     conn.commit()
     conn.close()
 
-    if deleted > 0:
-        log.info(f"Cleaned up {deleted} old sessions")
+    if deleted_sessions > 0:
+        log.info(f"Cleaned up {deleted_sessions} old sessions, {deleted_interactions} interactions")
 
 
 def restore_last_session():
