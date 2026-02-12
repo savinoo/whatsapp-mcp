@@ -327,17 +327,25 @@ def read_stream_json(proc: subprocess.Popen, stop_heartbeat: threading.Event,
                      stop_typing: threading.Event,
                      tool_count_ref: dict) -> tuple[str, int, list[str]]:
     """
-    Read stream-json output from Claude process.
+    Read stream-json output from Claude CLI process.
+
+    Claude CLI stream-json format emits complete JSON objects per line:
+    - {"type": "system", "subtype": "init", ...} — session init
+    - {"type": "assistant", "message": {"content": [...]}} — assistant turn with complete content blocks
+    - {"type": "user", ...} — tool results fed back
+    - {"type": "result", "result": "final text", ...} — final result
+
+    Content blocks inside assistant messages:
+    - {"type": "text", "text": "..."} — text response
+    - {"type": "tool_use", "name": "Write", "input": {"file_path": "..."}} — tool invocation
+    - {"type": "tool_result", ...} — tool execution result
+
     Updates tool_count_ref["count"] in real-time for heartbeat thread.
     Returns: (result_text, tool_use_count, modified_files)
     """
     result_text = ""
     tool_use_count = 0
     modified_files = []
-
-    # Track accumulated tool input JSON for Write/Edit tools
-    current_tool_name = None
-    current_tool_input_chunks = []
 
     for line in iter(proc.stdout.readline, ""):
         if not line.strip():
@@ -350,36 +358,25 @@ def read_stream_json(proc: subprocess.Popen, stop_heartbeat: threading.Event,
 
         event_type = event.get("type")
 
-        # Track tool use start
-        if event_type == "content_block_start":
-            content_block = event.get("content_block", {})
-            if content_block.get("type") == "tool_use":
-                tool_use_count += 1
-                tool_count_ref["count"] = tool_use_count
-                current_tool_name = content_block.get("name")
-                current_tool_input_chunks = []
+        # Parse assistant messages for tool_use content blocks
+        if event_type == "assistant":
+            message = event.get("message", {})
+            for block in message.get("content", []):
+                block_type = block.get("type")
 
-        # Accumulate tool input JSON
-        elif event_type == "content_block_delta":
-            delta = event.get("delta", {})
-            if delta.get("type") == "input_json_delta":
-                current_tool_input_chunks.append(delta.get("partial_json", ""))
+                if block_type == "tool_use":
+                    tool_use_count += 1
+                    tool_count_ref["count"] = tool_use_count
 
-        # Tool use finished
-        elif event_type == "content_block_stop":
-            if current_tool_name in ("Write", "Edit", "write", "edit"):
-                try:
-                    full_input_json = "".join(current_tool_input_chunks)
-                    tool_input = json.loads(full_input_json)
-                    file_path = tool_input.get("file_path")
-                    if file_path:
-                        modified_files.append(file_path)
-                        log.info(f"Detected modified file: {file_path}")
-                except json.JSONDecodeError:
-                    pass
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
 
-            current_tool_name = None
-            current_tool_input_chunks = []
+                    # Detect Write/Edit to track modified files (Phase 5)
+                    if tool_name in ("Write", "Edit", "write", "edit"):
+                        file_path = tool_input.get("file_path")
+                        if file_path:
+                            modified_files.append(file_path)
+                            log.info(f"Detected modified file: {file_path}")
 
         # Extract final result
         elif event_type == "result":
@@ -445,6 +442,7 @@ def invoke_claude(messages: list[dict]):
     cmd = [
         claude_bin,
         "-p",
+        "--verbose",
         "--dangerously-skip-permissions",
         "--append-system-prompt", SYSTEM_PROMPT,
         "--output-format", "stream-json",  # Phase 3
