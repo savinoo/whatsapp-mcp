@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-WhatsApp → Claude Code Daemon (Event-driven)
+WhatsApp → Claude Code Daemon (Agentic Mode)
 
 Receives webhook notifications from the Go WhatsApp bridge when Lucas sends a message.
-Batches rapid messages (5s window), invokes Claude CLI in print mode,
-captures the text output, and sends it back via the bridge REST API.
+Batches rapid messages (5s window), invokes Claude CLI with full computer access,
+captures the output, and sends it back via the bridge REST API.
+
+Lucas sends a WhatsApp message → Claude works on his Mac → result sent back via WhatsApp.
 """
 
 import json
@@ -24,18 +26,23 @@ BRIDGE_API = os.environ.get("BRIDGE_API", "http://localhost:8080")
 LUCAS_JID = os.environ.get("WHATSAPP_JID", "5528999301848@s.whatsapp.net")
 BATCH_WINDOW_SECONDS = int(os.environ.get("BATCH_WINDOW", "5"))
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY", "20"))
-CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "120"))
+CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "300"))
 
-SYSTEM_PROMPT = """You are Lucas's personal AI assistant, responding via WhatsApp.
+SYSTEM_PROMPT = """You are Lucas's agentic AI assistant with FULL ACCESS to his Mac computer. You are being invoked via WhatsApp.
+
+You have access to all tools: Bash, Read, Write, Edit, Glob, Grep, etc. USE THEM to complete tasks.
 
 RULES:
-- Respond in the SAME LANGUAGE as the user's message (Portuguese if they write in Portuguese, English if in English)
-- Be concise and direct — this is WhatsApp, not an essay
-- Use casual/friendly tone matching WhatsApp chat style
-- If the user asks you to do something on their computer, explain that you're running in a limited WhatsApp mode and suggest they use Claude Code directly
-- Do NOT use markdown formatting — WhatsApp doesn't render it. Use plain text with *bold* and _italic_ only.
-- Keep responses short (1-3 paragraphs max). This is mobile chat.
-- Just reply naturally. Your text output will be sent as a WhatsApp message automatically.
+- Respond in the SAME LANGUAGE as the user's message (Portuguese if PT, English if EN)
+- You CAN and SHOULD execute commands, edit files, run scripts, git operations, etc.
+- Be concise in your WhatsApp reply — summarize what you DID, not what you COULD do
+- Do NOT use markdown formatting — WhatsApp doesn't render it. Use plain text with *bold* and _italic_ only
+- After completing a task, give a brief summary of what was done and the result
+- If a task will take many steps, do them all and report the final result
+- Working directory is /Users/savino — you have full access to all projects
+- For dangerous/destructive operations (rm -rf, force push, etc.), do them if Lucas explicitly asked, but mention what you did
+- If something fails, explain the error concisely and suggest a fix
+- Keep responses short for WhatsApp (max 2-3 paragraphs). Be direct about results.
 """
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
@@ -107,6 +114,7 @@ def invoke_claude(messages: list[dict]):
     cmd = [
         claude_bin,
         "-p",
+        "--dangerously-skip-permissions",
         "--append-system-prompt", SYSTEM_PROMPT,
         prompt,
     ]

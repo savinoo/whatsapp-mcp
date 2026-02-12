@@ -106,28 +106,29 @@ Without this setup, you'll likely run into errors like:
 
 > `Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work.`
 
-## Claude Code Daemon (WhatsApp → AI Auto-reply)
+## Agentic Mode (WhatsApp → Claude works on your computer)
 
-This fork adds an **event-driven AI daemon** that lets you chat with Claude directly from WhatsApp. Send a message to your "Notes" (self-chat), and Claude responds instantly.
+This fork adds an **agentic daemon** that gives Claude Code full access to your computer via WhatsApp. Send a message to your "Notes" (self-chat), and Claude executes tasks on your Mac — editing files, running commands, git operations, deployments, anything.
 
 ### How it works
 
 ```
-WhatsApp (you send a message)
+WhatsApp (you send a task)
     ↓
 Go Bridge (detects message, sends webhook)
     ↓ HTTP POST to localhost:9090
 Python Daemon (batches messages for 5s)
-    ↓ invokes claude -p
-Claude CLI (generates response)
+    ↓ invokes claude -p --dangerously-skip-permissions
+Claude CLI (executes tools: Bash, Read, Write, Edit, etc.)
     ↓ stdout captured by Python
-Python Daemon (sends response via REST API)
+Python Daemon (sends result via REST API)
     ↓ POST to localhost:8080/api/send
-WhatsApp (you receive the reply)
+WhatsApp (you receive the result)
 ```
 
 ### Features
 
+- **Full computer access**: Claude can run commands, edit files, manage git repos — everything Claude Code can do
 - **Event-driven**: No polling. The Go bridge notifies the daemon instantly via webhook
 - **Message batching**: Rapid messages are grouped (5s window) into a single Claude invocation
 - **Echo prevention**: Messages sent by Claude are tracked to prevent infinite loops
