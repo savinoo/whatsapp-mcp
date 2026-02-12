@@ -19,6 +19,7 @@ Lucas sends a WhatsApp message → Claude works on his Mac → result sent back 
 
 import json
 import logging
+import logging.handlers
 import os
 import signal
 import shutil
@@ -69,10 +70,20 @@ Available slash commands (Lucas can use):
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+LOG_DATEFMT = "%H:%M:%S"
+LOG_FILE = SCRIPT_DIR / "daemon.log"
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
+    format=LOG_FORMAT,
+    datefmt=LOG_DATEFMT,
+    handlers=[
+        logging.StreamHandler(),
+        logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=5_000_000, backupCount=3, encoding="utf-8"
+        ),
+    ],
 )
 log = logging.getLogger("daemon")
 
