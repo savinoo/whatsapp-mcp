@@ -67,6 +67,18 @@ conversation_history: list[dict] = []  # [{role: "user"/"assistant", content: ".
 # ─── WhatsApp Send ───────────────────────────────────────────────────────────
 
 
+def set_typing(composing: bool = True):
+    """Set typing indicator (composing/paused) in the WhatsApp chat."""
+    try:
+        requests.post(
+            f"{BRIDGE_API}/api/typing",
+            json={"chat_jid": LUCAS_JID, "state": "composing" if composing else "paused"},
+            timeout=5,
+        )
+    except Exception as e:
+        log.warning(f"Failed to set typing indicator: {e}")
+
+
 def send_whatsapp_message(text: str):
     """Send a message back to Lucas via the bridge REST API."""
     if not text.strip():
@@ -109,6 +121,7 @@ def invoke_claude(messages: list[dict]):
     prompt = "\n".join(history_lines)
 
     log.info(f"Invoking Claude with: {user_msg[:100]}...")
+    set_typing(True)
 
     claude_bin = os.environ.get("CLAUDE_BIN", "/Users/savino/.local/bin/claude")
     cmd = [
@@ -160,6 +173,7 @@ def invoke_claude(messages: list[dict]):
         log.error(f"Error invoking Claude: {e}", exc_info=True)
         send_whatsapp_message("Erro ao processar mensagem. Tenta de novo!")
     finally:
+        set_typing(False)
         # Process queued messages that arrived while Claude was busy
         with buffer_lock:
             queued = list(claude_queue)

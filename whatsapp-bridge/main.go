@@ -828,6 +828,50 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
+	// Handler for typing indicator (composing/paused)
+	http.HandleFunc("/api/typing", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			ChatJID string `json:"chat_jid"`
+			State   string `json:"state"` // "composing" or "paused"
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+
+		if req.ChatJID == "" {
+			http.Error(w, "chat_jid is required", http.StatusBadRequest)
+			return
+		}
+
+		jid, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid JID: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		state := types.ChatPresenceComposing
+		if req.State == "paused" {
+			state = types.ChatPresencePaused
+		}
+
+		err = client.SendChatPresence(context.Background(), jid, state, "")
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	})
+
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
