@@ -37,7 +37,7 @@ import requests
 WEBHOOK_PORT = int(os.environ.get("DAEMON_PORT", "9090"))
 BRIDGE_API = os.environ.get("BRIDGE_API", "http://localhost:8080")
 LUCAS_JID = os.environ.get("WHATSAPP_JID", "5528999301848@s.whatsapp.net")
-BATCH_WINDOW_SECONDS = int(os.environ.get("BATCH_WINDOW", "5"))
+BATCH_WINDOW_SECONDS = int(os.environ.get("BATCH_WINDOW", "0"))
 CLAUDE_TIMEOUT = os.environ.get("CLAUDE_TIMEOUT", "")  # empty = no timeout
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
