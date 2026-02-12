@@ -3,8 +3,8 @@
 WhatsApp → Claude Code Daemon (Agentic Mode) - Evolution Complete
 
 Receives webhook notifications from the Go WhatsApp bridge when Lucas sends a message.
-Batches rapid messages (5s window), invokes Claude CLI with full computer access,
-captures the output, and sends it back via the bridge REST API.
+Invokes Claude CLI with full computer access using streaming (stream-json),
+captures output in real-time with heartbeat, and sends results + files back via the bridge REST API.
 
 Features:
 - Phase 1: /cancel + subprocess tracking
