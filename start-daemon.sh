@@ -4,8 +4,6 @@
 # Usage: ./start-daemon.sh
 #
 
-set -e
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BRIDGE_DIR="$SCRIPT_DIR/whatsapp-bridge"
 DAEMON_SCRIPT="$SCRIPT_DIR/whatsapp-daemon.py"
@@ -34,7 +32,7 @@ cleanup() {
     exit 0
 }
 
-trap cleanup SIGINT SIGTERM EXIT
+trap cleanup SIGINT SIGTERM
 
 # Check prerequisites
 if [ ! -f "$BRIDGE_DIR/whatsapp-bridge" ]; then
@@ -58,16 +56,27 @@ python3 -c "import requests" 2>/dev/null || {
     pip3 install requests
 }
 
+# Kill any existing processes on our ports
+echo "[start-daemon] Cleaning up existing processes..."
+lsof -ti:8080 2>/dev/null | xargs kill 2>/dev/null || true
+lsof -ti:9090 2>/dev/null | xargs kill 2>/dev/null || true
+sleep 1
+
 # Start Go bridge
 echo "[start-daemon] Starting WhatsApp bridge..."
-(cd "$BRIDGE_DIR" && ./whatsapp-bridge) &
+(cd "$BRIDGE_DIR" && exec ./whatsapp-bridge) &
 BRIDGE_PID=$!
 echo "[start-daemon] Bridge PID: $BRIDGE_PID"
 
-# Wait for bridge REST API to be ready
+# Wait for bridge REST API to be ready (check that OUR bridge is responding)
 echo "[start-daemon] Waiting for bridge API (port 8080)..."
 for i in $(seq 1 30); do
-    if curl -s http://localhost:8080/api/send -X POST -d '{}' >/dev/null 2>&1; then
+    # Check the bridge process is still alive
+    if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+        echo "[start-daemon] ERROR: Bridge process died"
+        exit 1
+    fi
+    if curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/send -X POST -H 'Content-Type: application/json' -d '{"recipient":"test","message":"ping"}' 2>/dev/null | grep -q '500\|200\|400'; then
         echo "[start-daemon] Bridge API is ready."
         break
     fi
@@ -83,6 +92,14 @@ python3 "$DAEMON_SCRIPT" &
 DAEMON_PID=$!
 echo "[start-daemon] Daemon PID: $DAEMON_PID"
 
+# Verify daemon started
+sleep 1
+if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+    echo "[start-daemon] ERROR: Daemon failed to start"
+    cleanup
+    exit 1
+fi
+
 echo ""
 echo "========================================="
 echo "  WhatsApp + Claude Daemon Running"
@@ -92,7 +109,15 @@ echo "  Press Ctrl+C to stop all"
 echo "========================================="
 echo ""
 
-# Wait for either process to exit
-wait -n "$BRIDGE_PID" "$DAEMON_PID" 2>/dev/null || true
-echo "[start-daemon] A process exited, shutting down..."
-cleanup
+# Monitor both processes - if either dies, shut down
+while true; do
+    if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+        echo "[start-daemon] Bridge process exited"
+        cleanup
+    fi
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+        echo "[start-daemon] Daemon process exited"
+        cleanup
+    fi
+    sleep 2
+done

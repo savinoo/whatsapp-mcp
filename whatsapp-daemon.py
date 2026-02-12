@@ -3,7 +3,8 @@
 WhatsApp → Claude Code Daemon (Event-driven)
 
 Receives webhook notifications from the Go WhatsApp bridge when Lucas sends a message.
-Batches rapid messages (5s window), invokes Claude CLI, and sends the response back via WhatsApp REST API.
+Batches rapid messages (5s window), invokes Claude CLI in print mode,
+captures the text output, and sends it back via the bridge REST API.
 """
 
 import json
@@ -11,7 +12,6 @@ import logging
 import subprocess
 import threading
 import time
-import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import requests
@@ -22,7 +22,7 @@ WEBHOOK_PORT = 9090
 BRIDGE_API = "http://localhost:8080"
 LUCAS_JID = "5528999301848@s.whatsapp.net"
 BATCH_WINDOW_SECONDS = 5
-SESSION_ID = str(uuid.uuid4())
+MAX_HISTORY = 20  # number of recent exchanges to include for context
 
 SYSTEM_PROMPT = """You are Lucas's personal AI assistant, responding via WhatsApp.
 
@@ -31,17 +31,9 @@ RULES:
 - Be concise and direct — this is WhatsApp, not an essay
 - Use casual/friendly tone matching WhatsApp chat style
 - If the user asks you to do something on their computer, explain that you're running in a limited WhatsApp mode and suggest they use Claude Code directly
-- You have access to the conversation history via --session-id, so you remember previous messages
-
-TO SEND YOUR RESPONSE, you MUST use this exact curl command:
-curl -s -X POST http://localhost:8080/api/send -H "Content-Type: application/json" -d '{"recipient": "5528999301848@s.whatsapp.net", "message": "YOUR_RESPONSE_HERE"}'
-
-IMPORTANT:
-- Always send your response using the curl command above. This is how you reply on WhatsApp.
-- If your response is long, split it into multiple messages (multiple curl calls) for better readability on mobile.
-- Escape special characters properly in the JSON string (double quotes, newlines, etc).
 - Do NOT use markdown formatting — WhatsApp doesn't render it. Use plain text with *bold* and _italic_ only.
-- After sending your response via curl, output "DONE" to indicate you've finished.
+- Keep responses short (1-3 paragraphs max). This is mobile chat.
+- Just reply naturally. Your text output will be sent as a WhatsApp message automatically.
 """
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
@@ -59,31 +51,59 @@ message_buffer: list[dict] = []
 buffer_lock = threading.Lock()
 buffer_timer: threading.Timer | None = None
 claude_lock = threading.Lock()
-claude_queue: list[dict] = []  # messages that arrive while Claude is processing
+claude_queue: list[dict] = []
+conversation_history: list[dict] = []  # [{role: "user"/"assistant", content: "..."}]
+
+
+# ─── WhatsApp Send ───────────────────────────────────────────────────────────
+
+
+def send_whatsapp_message(text: str):
+    """Send a message back to Lucas via the bridge REST API."""
+    if not text.strip():
+        return
+    try:
+        resp = requests.post(
+            f"{BRIDGE_API}/api/send",
+            json={"recipient": LUCAS_JID, "message": text},
+            timeout=30,
+        )
+        log.info(f"Sent WhatsApp message (status {resp.status_code}, {len(text)} chars)")
+    except Exception as e:
+        log.error(f"Failed to send WhatsApp message: {e}")
 
 
 # ─── Claude Invocation ───────────────────────────────────────────────────────
 
 
 def invoke_claude(messages: list[dict]):
-    """Invoke Claude CLI with batched messages and let it respond via curl."""
+    """Invoke Claude CLI, capture text output, send it via WhatsApp."""
     if not messages:
         return
 
-    # Build the prompt from batched messages
+    # Build the user message from batched messages
     if len(messages) == 1:
-        prompt = messages[0]["content"]
+        user_msg = messages[0]["content"]
     else:
         lines = [f"- {m['content']}" for m in messages]
-        prompt = "Multiple messages received:\n" + "\n".join(lines)
+        user_msg = "Mensagens recebidas:\n" + "\n".join(lines)
 
-    log.info(f"Invoking Claude with: {prompt[:100]}...")
+    # Add to conversation history
+    conversation_history.append({"role": "user", "content": user_msg})
+
+    # Build prompt with conversation context
+    history_lines = []
+    for entry in conversation_history[-MAX_HISTORY:]:
+        prefix = "Lucas" if entry["role"] == "user" else "Assistente"
+        history_lines.append(f"{prefix}: {entry['content']}")
+
+    prompt = "\n".join(history_lines)
+
+    log.info(f"Invoking Claude with: {user_msg[:100]}...")
 
     cmd = [
         "claude",
         "-p",
-        "--session-id", SESSION_ID,
-        "--dangerously-skip-permissions",
         "--append-system-prompt", SYSTEM_PROMPT,
         prompt,
     ]
@@ -97,47 +117,46 @@ def invoke_claude(messages: list[dict]):
             cwd="/Users/savino",
         )
         log.info(f"Claude exit code: {result.returncode}")
-        if result.stdout.strip():
-            # Claude's stdout may contain the response text (after curl sends it)
-            log.info(f"Claude stdout (last 200 chars): ...{result.stdout[-200:]}")
-        if result.stderr.strip():
-            log.warning(f"Claude stderr: {result.stderr[:500]}")
 
-        # If Claude failed to send via curl, send error message as fallback
-        if result.returncode != 0:
-            send_whatsapp_message("⚠️ Claude encountered an error processing your message. Try again.")
+        response = result.stdout.strip()
+
+        if result.stderr.strip():
+            log.warning(f"Claude stderr: {result.stderr[:300]}")
+
+        if result.returncode == 0 and response:
+            log.info(f"Claude response ({len(response)} chars): {response[:150]}...")
+            # Save to conversation history
+            conversation_history.append({"role": "assistant", "content": response})
+            # Split long messages for WhatsApp readability (max ~4000 chars per message)
+            if len(response) > 4000:
+                chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+                for chunk in chunks:
+                    send_whatsapp_message(chunk)
+                    time.sleep(0.5)
+            else:
+                send_whatsapp_message(response)
+        elif result.returncode != 0:
+            log.error(f"Claude failed (exit {result.returncode}): {result.stderr[:200]}")
+            send_whatsapp_message("Erro ao processar mensagem. Tenta de novo!")
 
     except subprocess.TimeoutExpired:
         log.error("Claude timed out after 120s")
-        send_whatsapp_message("⚠️ Processing timed out. Try a simpler message.")
+        send_whatsapp_message("Timeout processando mensagem. Tenta algo mais simples!")
     except FileNotFoundError:
-        log.error("Claude CLI not found! Make sure 'claude' is in PATH")
-        send_whatsapp_message("⚠️ Claude CLI not available.")
+        log.error("Claude CLI not found in PATH")
+        send_whatsapp_message("Claude CLI nao disponivel.")
     except Exception as e:
         log.error(f"Error invoking Claude: {e}")
-        send_whatsapp_message(f"⚠️ Error: {e}")
+        send_whatsapp_message(f"Erro: {e}")
     finally:
-        # Check if there are queued messages that arrived while Claude was processing
+        # Process queued messages that arrived while Claude was busy
         with buffer_lock:
             queued = list(claude_queue)
             claude_queue.clear()
 
         if queued:
-            log.info(f"Processing {len(queued)} queued messages that arrived during Claude invocation")
+            log.info(f"Processing {len(queued)} queued messages")
             invoke_claude(queued)
-
-
-def send_whatsapp_message(text: str):
-    """Send a message back to Lucas via the bridge REST API."""
-    try:
-        resp = requests.post(
-            f"{BRIDGE_API}/api/send",
-            json={"recipient": LUCAS_JID, "message": text},
-            timeout=10,
-        )
-        log.info(f"Sent fallback message (status {resp.status_code})")
-    except Exception as e:
-        log.error(f"Failed to send WhatsApp message: {e}")
 
 
 # ─── Message Batching ────────────────────────────────────────────────────────
@@ -155,14 +174,12 @@ def flush_buffer():
     if not messages:
         return
 
-    # Try to acquire Claude lock (non-blocking)
     if claude_lock.acquire(blocking=False):
         try:
             invoke_claude(messages)
         finally:
             claude_lock.release()
     else:
-        # Claude is busy, queue these messages
         log.info("Claude is busy, queuing messages for next round")
         with buffer_lock:
             claude_queue.extend(messages)
@@ -176,7 +193,6 @@ def add_message(msg: dict):
         message_buffer.append(msg)
         log.info(f"Buffered message ({len(message_buffer)} in buffer): {msg['content'][:80]}")
 
-        # Reset the timer
         if buffer_timer is not None:
             buffer_timer.cancel()
 
@@ -225,7 +241,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
     def log_message(self, format, *args):
-        # Suppress default HTTP request logging (we have our own)
         pass
 
 
@@ -234,12 +249,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
 def main():
     log.info(f"Starting WhatsApp daemon on port {WEBHOOK_PORT}")
-    log.info(f"Session ID: {SESSION_ID}")
     log.info(f"Batch window: {BATCH_WINDOW_SECONDS}s")
     log.info(f"Bridge API: {BRIDGE_API}")
 
-    server = HTTPServer(("127.0.0.1", WEBHOOK_PORT), WebhookHandler)
-    log.info(f"Webhook server listening on http://127.0.0.1:{WEBHOOK_PORT}/webhook")
+    server = HTTPServer(("", WEBHOOK_PORT), WebhookHandler)
+    log.info(f"Webhook server listening on http://0.0.0.0:{WEBHOOK_PORT}/webhook")
 
     try:
         server.serve_forever()

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +32,12 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 )
+
+// Track message IDs sent via REST API to avoid webhook echo loops
+var sentByAPI = struct {
+	sync.Mutex
+	ids map[string]time.Time
+}{ids: make(map[string]time.Time)}
 
 // Message represents a chat message for our client
 type Message struct {
@@ -363,11 +370,22 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	}
 
 	// Send message
-	_, err = client.SendMessage(context.Background(), recipientJID, msg)
+	sendResp, err := client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
 		return false, fmt.Sprintf("Error sending message: %v", err)
 	}
+
+	// Track this message ID to prevent webhook echo loops
+	sentByAPI.Lock()
+	sentByAPI.ids[sendResp.ID] = time.Now()
+	// Clean up old entries (older than 60s)
+	for id, ts := range sentByAPI.ids {
+		if time.Since(ts) > 60*time.Second {
+			delete(sentByAPI.ids, id)
+		}
+	}
+	sentByAPI.Unlock()
 
 	return true, fmt.Sprintf("Message sent to %s", recipient)
 }
@@ -469,8 +487,15 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 			fmt.Printf("[%s] %s %s: %s\n", timestamp, direction, sender, content)
 		}
 
-		// Notify webhook daemon for messages from Lucas (not from me)
-		if sender == "5528999301848" && !msg.Info.IsFromMe && content != "" {
+		// Notify webhook daemon for messages from Lucas
+		// IsFromMe is true because the bridge IS Lucas's account,
+		// so we detect messages sent to the self-chat ("Notes")
+		// Skip messages sent by the bridge API (echo prevention)
+		sentByAPI.Lock()
+		_, isEcho := sentByAPI.ids[msg.Info.ID]
+		sentByAPI.Unlock()
+
+		if chatJID == "5528999301848@s.whatsapp.net" && msg.Info.IsFromMe && content != "" && !isEcho {
 			go notifyWebhook(sender, content, msg.Info.ID, chatJID)
 		}
 	}
