@@ -103,8 +103,9 @@ def invoke_claude(messages: list[dict]):
 
     log.info(f"Invoking Claude with: {user_msg[:100]}...")
 
+    claude_bin = os.environ.get("CLAUDE_BIN", "/Users/savino/.local/bin/claude")
     cmd = [
-        "claude",
+        claude_bin,
         "-p",
         "--append-system-prompt", SYSTEM_PROMPT,
         prompt,
